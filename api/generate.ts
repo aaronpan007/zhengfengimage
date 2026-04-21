@@ -1,0 +1,179 @@
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import Replicate from 'replicate';
+
+const replicate = new Replicate({
+  auth: process.env.REPLICATE_API_TOKEN,
+});
+
+const MODEL_MAP: Record<string, string> = {
+  'nano-banana-pro': 'google/nano-banana-pro',
+  'nano-banana-2': 'google/nano-banana-2',
+  'seedream-5-lite': 'bytedance/seedream-5-lite',
+};
+
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: '50mb',
+    },
+  },
+};
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  console.log('[API] Received generate request');
+  try {
+    const { originalImage, annotatedImage, referenceImage, prompt, model } = req.body;
+    const selectedModel = model || 'nano-banana-pro';
+
+    const apiToken = process.env.REPLICATE_API_TOKEN;
+    if (!apiToken || apiToken === 'YOUR_REPLICATE_API_TOKEN') {
+      console.error('[API] REPLICATE_API_TOKEN is not configured');
+      return res.status(500).json({ error: '请在 Vercel 环境变量中配置 REPLICATE_API_TOKEN' });
+    }
+
+    const replicateModel = MODEL_MAP[selectedModel];
+    if (!replicateModel) {
+      return res.status(400).json({ error: `未知模型: ${selectedModel}` });
+    }
+
+    console.log(`[AI] Using model: ${replicateModel}`);
+    let output: any;
+    let modelName: string;
+
+    if (selectedModel === 'seedream-5-lite') {
+      modelName = 'Seedream 5.0 Lite';
+
+      const aiPrompt = referenceImage
+        ? `You are editing a construction site photo. The image shows a photo with RED-HIGHLIGHTED areas indicating where changes should be made. Reference image shows the target appearance.
+
+TASK: Edit ONLY the red-highlighted areas to match the style, materials, and appearance of the reference image. Keep all non-highlighted areas exactly as they are.
+
+User instruction: ${prompt}`
+        : `You are editing a construction site photo. The image shows a photo with RED-HIGHLIGHTED areas indicating where changes should be made.
+
+TASK: Edit ONLY the red-highlighted areas according to the user instruction. Keep all non-highlighted areas exactly as they are. Maintain original lighting and perspective.
+
+User instruction: ${prompt}`;
+
+      const seedreamImages: string[] = [annotatedImage || originalImage];
+      if (referenceImage) seedreamImages.push(referenceImage);
+
+      console.log(`[AI] Sending to ${replicateModel}, images: ${seedreamImages.length}, prompt length: ${aiPrompt.length}`);
+      output = await replicate.run(replicateModel as `${string}/${string}`, {
+        input: {
+          prompt: aiPrompt,
+          image_input: seedreamImages,
+          match_input_image: true,
+          output_format: 'png',
+        },
+      });
+    } else {
+      modelName = selectedModel === 'nano-banana-2' ? 'Nano Banana 2' : 'Nano Banana Pro';
+
+      const imageInput: string[] = [annotatedImage || originalImage];
+      if (referenceImage) imageInput.push(referenceImage);
+
+      const aiPrompt = referenceImage
+        ? `Image editing task.
+
+Image 1: Construction site photo with RED-HIGHLIGHTED areas. The red highlighted parts are the exact regions that need to be modified.
+Image 2: Reference image showing the TARGET appearance. Replicate its materials, textures, colors, and structural style in the highlighted areas.
+
+RULES:
+- ONLY modify the RED-HIGHLIGHTED areas in Image 1.
+- Keep all non-highlighted areas 100% unchanged.
+- The modified areas must match the reference image (Image 2) in style and appearance.
+- The result must look natural and seamless - no red color should remain.
+- Maintain the original photo's lighting, perspective, and camera angle.
+
+User instruction: ${prompt}`
+        : `Image editing task.
+
+Image 1: Construction site photo with RED-HIGHLIGHTED areas. The red highlighted parts are the exact regions that need to be modified.
+
+RULES:
+- ONLY modify the RED-HIGHLIGHTED areas in Image 1.
+- Keep all non-highlighted areas 100% unchanged.
+- The result must look natural and seamless - no red color should remain.
+- Maintain the original photo's lighting, perspective, and camera angle.
+
+User instruction: ${prompt}`;
+
+      console.log(`[AI] Sending to ${replicateModel}, images: ${imageInput.length}, prompt length: ${aiPrompt.length}`);
+      output = await replicate.run(replicateModel as `${string}/${string}`, {
+        input: {
+          prompt: aiPrompt,
+          image_input: imageInput,
+        },
+      });
+    }
+
+    console.log('[AI] Prediction completed, output type:', typeof output, Array.isArray(output));
+
+    // Replicate SDK returns FileOutput (extends ReadableStream) for image URLs.
+    // FileOutput has toString() returning the URL string, but .url is a METHOD not a property.
+    let resultImageUrl: string | null = null;
+
+    if (typeof output === 'string') {
+      resultImageUrl = output;
+    } else if (output != null) {
+      const str = output.toString?.();
+      if (typeof str === 'string' && str.startsWith('http')) {
+        resultImageUrl = str;
+      } else if (Array.isArray(output) && output.length > 0) {
+        const first = output[0];
+        if (typeof first === 'string') {
+          resultImageUrl = first;
+        } else if (first != null) {
+          const firstStr = first.toString?.();
+          if (typeof firstStr === 'string' && firstStr.startsWith('http')) {
+            resultImageUrl = firstStr;
+          }
+        }
+      }
+    }
+
+    console.log('[AI] Extracted URL:', resultImageUrl ? resultImageUrl.slice(0, 80) + '...' : 'null');
+
+    // Convert Replicate URL to base64 to avoid CORS issues
+    let resultBase64 = originalImage;
+    if (resultImageUrl && resultImageUrl.startsWith('http')) {
+      try {
+        console.log('[AI] Fetching result image to convert to base64...');
+        const imgResponse = await fetch(resultImageUrl);
+        if (imgResponse.ok) {
+          const imgBuffer = Buffer.from(await imgResponse.arrayBuffer());
+          const contentType = imgResponse.headers.get('content-type') || 'image/png';
+          resultBase64 = `data:${contentType};base64,${imgBuffer.toString('base64')}`;
+          console.log('[AI] Image converted to base64, size:', imgBuffer.length);
+        } else {
+          console.warn('[AI] Failed to fetch result image, status:', imgResponse.status);
+          resultBase64 = resultImageUrl;
+        }
+      } catch (e: any) {
+        console.warn('[AI] Failed to convert image to base64:', e.message);
+        resultBase64 = resultImageUrl;
+      }
+    } else if (resultImageUrl) {
+      resultBase64 = resultImageUrl;
+    }
+
+    const analysisText = `[${modelName} 生成完成]\n\n修改指令：${prompt}\n\n已根据标注区域${referenceImage ? '和参考图' : ''}生成修改后的施工效果图。请通过对比滑块查看修改前后的差异。`;
+
+    res.json({
+      success: true,
+      analysis: analysisText,
+      resultImage: resultBase64,
+    });
+  } catch (error: any) {
+    console.error('[API] Error in /api/generate:', error.message || error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to process AI request',
+    });
+  }
+}
