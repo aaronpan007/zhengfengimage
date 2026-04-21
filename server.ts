@@ -3,16 +3,26 @@ import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import Replicate from 'replicate';
 
-dotenv.config();
+dotenv.config({ path: '.env.local' });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const replicate = new Replicate({
+  auth: process.env.REPLICATE_API_TOKEN,
+});
+
+const MODEL_MAP: Record<string, string> = {
+  'nano-banana-pro': 'google/nano-banana-pro',
+  'nano-banana-2': 'google/nano-banana-2',
+  'seedream-5-lite': 'bytedance/seedream-5-lite',
+};
+
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = 3001;
 
   app.use(express.json({ limit: '50mb' }));
 
@@ -20,92 +30,157 @@ async function startServer() {
   app.post('/api/generate', async (req, res) => {
     console.log('[API] Received generate request');
     try {
-      const { originalImage, maskImage, referenceImage, prompt } = req.body;
-      
-      const rawApiKey = process.env.GEMINI_API_KEY;
-      if (!rawApiKey || rawApiKey.includes('INSERT_KEY_HERE') || rawApiKey === 'GEMINI_API_KEY') {
-        console.error('[API] GEMINI_API_KEY is not a valid key string');
-        return res.status(500).json({ error: '请在 Secrets 面板配置有效的 GEMINI_API_KEY (以 AIza 开头)' });
+      const { originalImage, annotatedImage, referenceImage, prompt, model } = req.body;
+      const selectedModel = model || 'nano-banana-pro';
+
+      const apiToken = process.env.REPLICATE_API_TOKEN;
+      if (!apiToken || apiToken === 'YOUR_REPLICATE_API_TOKEN') {
+        console.error('[API] REPLICATE_API_TOKEN is not configured');
+        return res.status(500).json({ error: '请在 .env.local 中配置有效的 REPLICATE_API_TOKEN' });
       }
 
-      // Aggressive sanitization: 
-      // 1. Remove any leading/trailing space or quotes
-      // 2. If user accidentally pasted "NAME=KEY", extract only "KEY"
-      let apiKey = rawApiKey.trim().replace(/^["']|["']$/g, '');
-      if (apiKey.includes('=')) {
-        apiKey = apiKey.split('=').pop()?.trim() || apiKey;
-      }
-      
-      console.log(`[API] Using sanitized Key. Length: ${apiKey.length}. Pre: ${apiKey.substring(0, 5)}...`);
-
-      const genAI = new GoogleGenerativeAI(apiKey);
-      
-      // Try Gemini 2.0, fallback to 1.5 if it fails due to model availability
-      let model;
-      try {
-        model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-      } catch (e) {
-        console.warn('[AI] Gemini 2.0 initialization failed, falling back to 1.5');
-        model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const replicateModel = MODEL_MAP[selectedModel];
+      if (!replicateModel) {
+        return res.status(400).json({ error: `未知模型: ${selectedModel}` });
       }
 
-      const getMimeType = (dataUrl: string) => {
-        const match = dataUrl.match(/^data:(image\/[a-zA-Z+]+);base64,/);
-        return match ? match[1] : 'image/jpeg';
-      };
+      console.log(`[AI] Using model: ${replicateModel}`);
+      let output: any;
+      let modelName: string;
 
-      const aiPrompt = `
-        作为建筑行业 AI 专家，请根据以下信息对施工现场图片的特定区域进行局部修改分析：
-        1. 原图 (Original Image): 施工现场实貌。
-        2. 遮罩层 (Mask Image): 标识了需要修改的局部区域。
-        3. 参考图 (Reference Image): 目标风格或结构的参考标准（如果有）。
-        4. 修改指令 (User Prompt): ${prompt}
+      if (selectedModel === 'seedream-5-lite') {
+        // Seedream: single image_input, example-based editing
+        modelName = 'Seedream 5.0 Lite';
 
-        请提供详尽的“技术诊断”，描述在遮罩区域应如何补充、修改或替换结构，以达到指令要求。重点关注施工质量、材质纹理及结构安全性。
-      `;
+        const aiPrompt = referenceImage
+          ? `You are editing a construction site photo. The image shows a photo with RED-HIGHLIGHTED areas indicating where changes should be made. Reference image shows the target appearance.
 
-      console.log('[AI] Preparing image payloads...');
-      const imageParts = [
-        { inlineData: { data: originalImage.split(',')[1], mimeType: getMimeType(originalImage) } },
-        { inlineData: { data: maskImage.split(',')[1], mimeType: getMimeType(maskImage) } }
-      ];
-      
-      if (referenceImage) {
-        console.log('[AI] Adding reference image to payload');
-        imageParts.push({ inlineData: { data: referenceImage.split(',')[1], mimeType: getMimeType(referenceImage) } });
+TASK: Edit ONLY the red-highlighted areas to match the style, materials, and appearance of the reference image. Keep all non-highlighted areas exactly as they are.
+
+User instruction: ${prompt}`
+          : `You are editing a construction site photo. The image shows a photo with RED-HIGHLIGHTED areas indicating where changes should be made.
+
+TASK: Edit ONLY the red-highlighted areas according to the user instruction. Keep all non-highlighted areas exactly as they are. Maintain original lighting and perspective.
+
+User instruction: ${prompt}`;
+
+        const seedreamImages: string[] = [annotatedImage || originalImage];
+        if (referenceImage) seedreamImages.push(referenceImage);
+
+        console.log(`[AI] Sending to ${replicateModel}, images: ${seedreamImages.length}, prompt length: ${aiPrompt.length}`);
+        output = await replicate.run(replicateModel as `${string}/${string}`, {
+          input: {
+            prompt: aiPrompt,
+            image_input: seedreamImages,
+            match_input_image: true,
+            output_format: 'png',
+          },
+        });
+      } else {
+        // Nano Banana Pro / 2: image_input array, multi-image reference
+        modelName = selectedModel === 'nano-banana-2' ? 'Nano Banana 2' : 'Nano Banana Pro';
+
+        const imageInput: string[] = [annotatedImage || originalImage];
+        if (referenceImage) imageInput.push(referenceImage);
+
+        const aiPrompt = referenceImage
+          ? `Image editing task.
+
+Image 1: Construction site photo with RED-HIGHLIGHTED areas. The red highlighted parts are the exact regions that need to be modified.
+Image 2: Reference image showing the TARGET appearance. Replicate its materials, textures, colors, and structural style in the highlighted areas.
+
+RULES:
+- ONLY modify the RED-HIGHLIGHTED areas in Image 1.
+- Keep all non-highlighted areas 100% unchanged.
+- The modified areas must match the reference image (Image 2) in style and appearance.
+- The result must look natural and seamless - no red color should remain.
+- Maintain the original photo's lighting, perspective, and camera angle.
+
+User instruction: ${prompt}`
+          : `Image editing task.
+
+Image 1: Construction site photo with RED-HIGHLIGHTED areas. The red highlighted parts are the exact regions that need to be modified.
+
+RULES:
+- ONLY modify the RED-HIGHLIGHTED areas in Image 1.
+- Keep all non-highlighted areas 100% unchanged.
+- The result must look natural and seamless - no red color should remain.
+- Maintain the original photo's lighting, perspective, and camera angle.
+
+User instruction: ${prompt}`;
+
+        console.log(`[AI] Sending to ${replicateModel}, images: ${imageInput.length}, prompt length: ${aiPrompt.length}`);
+        output = await replicate.run(replicateModel as `${string}/${string}`, {
+          input: {
+            prompt: aiPrompt,
+            image_input: imageInput,
+          },
+        });
       }
 
-      console.log('[AI] Sending request to Google Gemini API...');
-      let analysisText = "";
-      
-      try {
-        const result = await model.generateContent([aiPrompt, ...imageParts]);
-        const response = await result.response;
-        analysisText = response.text();
-        console.log('[AI] Real Response received');
-      } catch (aiError: any) {
-        const errorMsg = aiError.message || '';
-        console.error('[AI] Call failed:', errorMsg);
-        
-        // If API key is the issue, provide a realistic simulated response so the user can see the UI working
-        if (errorMsg.includes('API key not valid') || errorMsg.includes('API_KEY_INVALID')) {
-          console.warn('[AI] Invalid API Key detected. Entering Simulation Mode to unblock user UI.');
-          analysisText = `[系统诊断 - 演示模式]\n\n由于您的 API Key 目前无法通过 Google 接口验证，系统已为您自动生成“施工模拟建议”：\n\n1. 基坑加强：针对您标注的区域，建议部署直径 25mm 的 HRB400 级钢筋网，并配合喷锚支护。\n2. 降水处理：该区域附近可能存在渗透隐患，需加强止水帷幕的封闭性。\n3. 环境匹配：AI 辅助识别出环境光照为阴天，模拟生成时已自动校正材质反光率。\n\n[提示：请检查 Secrets 中的 GEMINI_API_KEY 是否包含引号或变量名。]`;
-        } else {
-          throw aiError; // Re-throw other types of errors
+      console.log('[AI] Prediction completed, output type:', typeof output, Array.isArray(output));
+
+      // Replicate SDK returns FileOutput (extends ReadableStream) for image URLs.
+      // FileOutput has toString() returning the URL string, but .url is a METHOD not a property.
+      let resultImageUrl: string | null = null;
+
+      if (typeof output === 'string') {
+        resultImageUrl = output;
+      } else if (output != null) {
+        // Try toString() first — FileOutput.toString() returns the URL string
+        const str = output.toString?.();
+        if (typeof str === 'string' && str.startsWith('http')) {
+          resultImageUrl = str;
+        } else if (Array.isArray(output) && output.length > 0) {
+          const first = output[0];
+          if (typeof first === 'string') {
+            resultImageUrl = first;
+          } else if (first != null) {
+            const firstStr = first.toString?.();
+            if (typeof firstStr === 'string' && firstStr.startsWith('http')) {
+              resultImageUrl = firstStr;
+            }
+          }
         }
       }
 
-      res.json({ 
-        success: true, 
+      console.log('[AI] Extracted URL:', resultImageUrl ? resultImageUrl.slice(0, 80) + '...' : 'null');
+
+      // Convert Replicate URL to base64 to avoid CORS issues
+      let resultBase64 = originalImage;
+      if (resultImageUrl && resultImageUrl.startsWith('http')) {
+        try {
+          console.log('[AI] Fetching result image to convert to base64...');
+          const imgResponse = await fetch(resultImageUrl);
+          if (imgResponse.ok) {
+            const imgBuffer = Buffer.from(await imgResponse.arrayBuffer());
+            const contentType = imgResponse.headers.get('content-type') || 'image/png';
+            resultBase64 = `data:${contentType};base64,${imgBuffer.toString('base64')}`;
+            console.log('[AI] Image converted to base64, size:', imgBuffer.length);
+          } else {
+            console.warn('[AI] Failed to fetch result image, status:', imgResponse.status);
+            resultBase64 = resultImageUrl;
+          }
+        } catch (e: any) {
+          console.warn('[AI] Failed to convert image to base64:', e.message);
+          resultBase64 = resultImageUrl;
+        }
+      } else if (resultImageUrl) {
+        resultBase64 = resultImageUrl;
+      }
+
+      const analysisText = `[${modelName} 生成完成]\n\n修改指令：${prompt}\n\n已根据标注区域${referenceImage ? '和参考图' : ''}生成修改后的施工效果图。请通过对比滑块查看修改前后的差异。`;
+
+      res.json({
+        success: true,
         analysis: analysisText,
-        resultImage: originalImage 
+        resultImage: resultBase64,
       });
     } catch (error: any) {
-      console.error('[API] Error in /api/generate:', error);
-      res.status(500).json({ 
-        success: false, 
-        error: error.message || 'Failed to process AI request' 
+      console.error('[API] Error in /api/generate:', error.message || error);
+      res.status(500).json({
+        success: false,
+        error: error.message || 'Failed to process AI request',
       });
     }
   });

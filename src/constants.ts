@@ -7,7 +7,7 @@ export const COLORS = {
 };
 
 export const UI_STRINGS = {
-  title: '中建智慧施工：AI施工图智能修改工具',
+  title: '正丰建设智慧施工：AI施工图智能修改工具',
   subtitle: '集成高精度AI语义识别，助力现场施工质量预控与效果模拟',
   uploadLabel: '上传施工现场原图',
   maskLabel: '标记编辑区域',

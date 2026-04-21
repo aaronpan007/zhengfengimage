@@ -80,6 +80,7 @@ export default function App() {
   const [imgDimensions, setImgDimensions] = useState({ width: 0, height: 0 });
   const [refImage, setRefImage] = useState<string | null>(null);
   const [prompt, setPrompt] = useState('');
+  const [selectedModel, setSelectedModel] = useState('nano-banana-pro');
   const [brushSize, setBrushSize] = useState(30);
   const [isEraser, setIsEraser] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -88,7 +89,41 @@ export default function App() {
   
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const contextRef = useRef<CanvasRenderingContext2D | null>(null);
+  const imageContainerRef = useRef<HTMLDivElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
+  const [showMaskPreview, setShowMaskPreview] = useState(false);
+  const [maskPreviewUrl, setMaskPreviewUrl] = useState<string | null>(null);
+  const [displaySize, setDisplaySize] = useState({ width: 0, height: 0 });
+
+  // Compute the image display size to match object-contain behavior,
+  // so the canvas overlay is pixel-aligned with the image.
+  useEffect(() => {
+    if (!imageContainerRef.current || imgDimensions.width === 0) return;
+
+    const updateSize = () => {
+      const container = imageContainerRef.current;
+      if (!container) return;
+      const { width: cw, height: ch } = container.getBoundingClientRect();
+      const imgAspect = imgDimensions.width / imgDimensions.height;
+      const containerAspect = cw / ch;
+
+      let dw, dh;
+      if (containerAspect > imgAspect) {
+        dh = ch;
+        dw = ch * imgAspect;
+      } else {
+        dw = cw;
+        dh = cw / imgAspect;
+      }
+
+      setDisplaySize({ width: Math.round(dw), height: Math.round(dh) });
+    };
+
+    updateSize();
+    const ro = new ResizeObserver(updateSize);
+    ro.observe(imageContainerRef.current);
+    return () => ro.disconnect();
+  }, [imgDimensions]);
 
   // Initialize Canvas
   useEffect(() => {
@@ -96,7 +131,7 @@ export default function App() {
       const canvas = canvasRef.current;
       canvas.width = imgDimensions.width;
       canvas.height = imgDimensions.height;
-      
+
       const ctx = canvas.getContext('2d');
       if (ctx) {
         ctx.lineCap = 'round';
@@ -106,38 +141,51 @@ export default function App() {
     }
   }, [imgDimensions]);
 
+  // Update mask preview when toggled
+  useEffect(() => {
+    if (showMaskPreview) {
+      setMaskPreviewUrl(createBinaryMask());
+    } else {
+      setMaskPreviewUrl(null);
+    }
+  }, [showMaskPreview]);
+
   const startDrawing = (e: React.MouseEvent | React.TouchEvent) => {
     if (!contextRef.current || !canvasRef.current) return;
-    
+
     const rect = canvasRef.current.getBoundingClientRect();
     const scaleX = canvasRef.current.width / rect.width;
     const scaleY = canvasRef.current.height / rect.height;
-    
-    const x = ('touches' in e ? e.touches[0].clientX : e.clientX) - rect.left;
-    const y = ('touches' in e ? e.touches[0].clientY : e.clientY) - rect.top;
-    
+
+    const clientX = ('touches' in e ? e.touches[0].clientX : e.clientX);
+    const clientY = ('touches' in e ? e.touches[0].clientY : e.clientY);
+    const x = (clientX - rect.left) * scaleX;
+    const y = (clientY - rect.top) * scaleY;
+
     contextRef.current.beginPath();
-    contextRef.current.moveTo(x * scaleX, y * scaleY);
-    
+    contextRef.current.moveTo(x, y);
+
     // Set operation: drawing or erasing
     contextRef.current.globalCompositeOperation = isEraser ? 'destination-out' : 'source-over';
     contextRef.current.strokeStyle = isEraser ? 'rgba(0,0,0,1)' : 'rgba(255, 107, 53, 0.4)';
-    contextRef.current.lineWidth = brushSize * Math.max(scaleX, scaleY); // Scale brush size to relative canvas
-    
+    contextRef.current.lineWidth = brushSize * Math.max(scaleX, scaleY);
+
     setIsDrawing(true);
   };
 
   const draw = (e: React.MouseEvent | React.TouchEvent) => {
     if (!isDrawing || !contextRef.current || !canvasRef.current) return;
-    
+
     const rect = canvasRef.current.getBoundingClientRect();
     const scaleX = canvasRef.current.width / rect.width;
     const scaleY = canvasRef.current.height / rect.height;
-    
-    const x = ('touches' in e ? e.touches[0].clientX : e.clientX) - rect.left;
-    const y = ('touches' in e ? e.touches[0].clientY : e.clientY) - rect.top;
-    
-    contextRef.current.lineTo(x * scaleX, y * scaleY);
+
+    const clientX = ('touches' in e ? e.touches[0].clientX : e.clientX);
+    const clientY = ('touches' in e ? e.touches[0].clientY : e.clientY);
+    const x = (clientX - rect.left) * scaleX;
+    const y = (clientY - rect.top) * scaleY;
+
+    contextRef.current.lineTo(x, y);
     contextRef.current.stroke();
   };
 
@@ -174,28 +222,140 @@ export default function App() {
     }
   };
 
+  // Check if canvas has any drawn content
+  const hasCanvasContent = (): boolean => {
+    const canvas = canvasRef.current;
+    if (!canvas) return false;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return false;
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    for (let i = 3; i < imageData.data.length; i += 4) {
+      if (imageData.data[i] > 10) return true;
+    }
+    return false;
+  };
+
+  // Convert canvas strokes to binary mask for preview (white=edit, black=preserve)
+  const createBinaryMask = (): string | null => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+
+    const w = canvas.width;
+    const h = canvas.height;
+    const imageData = ctx.getImageData(0, 0, w, h);
+    const pixels = imageData.data;
+
+    if (!hasCanvasContent()) return null;
+
+    const maskCanvas = document.createElement('canvas');
+    maskCanvas.width = w;
+    maskCanvas.height = h;
+    const maskCtx = maskCanvas.getContext('2d')!;
+    maskCtx.fillStyle = '#000000';
+    maskCtx.fillRect(0, 0, w, h);
+
+    for (let i = 0; i < pixels.length; i += 4) {
+      if (pixels[i + 3] > 10) {
+        pixels[i] = 255; pixels[i + 1] = 255; pixels[i + 2] = 255; pixels[i + 3] = 255;
+      } else {
+        pixels[i] = 0; pixels[i + 1] = 0; pixels[i + 2] = 0; pixels[i + 3] = 255;
+      }
+    }
+    maskCtx.putImageData(imageData, 0, 0);
+    return maskCanvas.toDataURL('image/png');
+  };
+
+  // Create annotated image: original + red highlight on masked area
+  // This is sent to AI models instead of a binary mask, so they can visually see where to edit
+  const createAnnotatedImage = (): Promise<string | null> => {
+    return new Promise((resolve) => {
+      const canvas = canvasRef.current;
+      if (!canvas || !originalImage) { resolve(null); return; }
+
+      const img = new Image();
+      img.onload = () => {
+        const annotatedCanvas = document.createElement('canvas');
+        annotatedCanvas.width = img.width;
+        annotatedCanvas.height = img.height;
+        const ctx = annotatedCanvas.getContext('2d')!;
+
+        // Draw original image
+        ctx.drawImage(img, 0, 0);
+
+        // Get mask data from drawing canvas
+        const maskCtx = canvas.getContext('2d')!;
+        const maskData = maskCtx.getImageData(0, 0, canvas.width, canvas.height);
+        const imgData = ctx.getImageData(0, 0, img.width, img.height);
+
+        // Overlay bright red on masked areas (alpha > 10)
+        for (let i = 0; i < maskData.data.length; i += 4) {
+          if (maskData.data[i + 3] > 10) {
+            // Blend with red: 60% red overlay
+            const blend = 0.6;
+            imgData.data[i]     = Math.round(imgData.data[i]     * (1 - blend) + 255 * blend); // R
+            imgData.data[i + 1] = Math.round(imgData.data[i + 1] * (1 - blend) + 30  * blend); // G
+            imgData.data[i + 2] = Math.round(imgData.data[i + 2] * (1 - blend) + 30  * blend); // B
+            imgData.data[i + 3] = 255;
+          }
+        }
+        ctx.putImageData(imgData, 0, 0);
+
+        resolve(annotatedCanvas.toDataURL('image/jpeg', 0.92));
+      };
+      img.onerror = () => resolve(null);
+      img.src = originalImage;
+    });
+  };
+
+  const handleDownload = async () => {
+    if (!result?.resultImage) return;
+    try {
+      const link = document.createElement('a');
+      link.href = result.resultImage;
+      link.download = `ai_edited_${Date.now()}.png`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      console.error('Download failed:', err);
+      window.open(result.resultImage, '_blank');
+    }
+  };
+
   const handleGenerate = async () => {
     if (!originalImage || !prompt || !canvasRef.current) {
       alert('请确保已上传图片并输入修改指令');
       return;
     }
-    
+
+    if (!hasCanvasContent()) {
+      alert('请先用画笔标注需要修改的区域');
+      return;
+    }
+
     setIsProcessing(true);
-    setResult(null); // Reset current result while loading
+    setResult(null);
 
     try {
-      // 检查 Canvas 是否有内容 (非常关键)
-      const maskData = canvasRef.current.toDataURL('image/png');
-      
-      console.log('[Frontend] Sending request to API...');
+      // Create annotated image (original + red highlight) for AI to see where to edit
+      const annotatedImage = await createAnnotatedImage();
+      if (!annotatedImage) {
+        alert('创建标注图失败，请重试');
+        return;
+      }
+
+      console.log('[Frontend] Sending request to API, model:', selectedModel);
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           originalImage,
-          maskImage: maskData,
+          annotatedImage,
           referenceImage: refImage,
           prompt,
+          model: selectedModel,
         }),
       });
 
@@ -208,10 +368,10 @@ export default function App() {
           analysis: data.analysis,
           resultImage: data.resultImage || originalImage
         };
-        
+
         setResult(newResult);
         setHistory(prev => [newResult, ...prev]);
-        
+
         confetti({
           particleCount: 100,
           spread: 70,
@@ -232,7 +392,7 @@ export default function App() {
   return (
     <div className="h-screen flex flex-col overflow-hidden font-sans bg-bg-base">
       <header className="h-[60px] bg-csce-blue text-white flex items-center px-6 shadow-[0_2px_4px_rgba(0,0,0,0.1)] z-10 shrink-0">
-        <div className="w-8 h-8 bg-csce-orange rounded flex items-center justify-center font-bold text-xl mr-3">建</div>
+        <div className="w-8 h-8 bg-csce-orange rounded flex items-center justify-center font-bold text-xl mr-3">正</div>
         <h1 className="text-[18px] font-semibold tracking-wide flex items-baseline">
           {UI_STRINGS.title}
           <span className="ml-3 text-[12px] opacity-70 font-normal">建筑行业 AI 视觉编辑专家</span>
@@ -280,6 +440,24 @@ export default function App() {
                 className="w-full h-1.5 bg-gray-100 rounded-lg appearance-none cursor-pointer accent-csce-orange"
               />
             </div>
+          </div>
+
+          <div>
+            <div className="section-head">AI 模型</div>
+            <select
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+              className="w-full p-2 border border-border-base rounded text-xs outline-none focus:border-csce-orange bg-[#fcfcfc] cursor-pointer"
+            >
+              <option value="nano-banana-pro">Nano Banana Pro (Google)</option>
+              <option value="nano-banana-2">Nano Banana 2 (Google)</option>
+              <option value="seedream-5-lite">Seedream 5.0 Lite (字节跳动)</option>
+            </select>
+            <p className="mt-1 text-[10px] text-gray-400 leading-snug">
+              {selectedModel === 'nano-banana-pro' && '稳定高效，适合大多数施工图编辑场景'}
+              {selectedModel === 'nano-banana-2' && '最新版本，支持更多参考图和更高分辨率'}
+              {selectedModel === 'seedream-5-lite' && '内置推理能力，擅长基于参考图的样式匹配'}
+            </p>
           </div>
 
           <div>
@@ -337,31 +515,54 @@ export default function App() {
                  <p className="text-[10px] mt-1 opacity-60">支持常见图像格式，AI 将自动识别环境参数</p>
               </div>
             ) : (
-              <div className="relative w-full h-full flex items-center justify-center overflow-hidden">
-                {/* Backdrop Layer */}
-                <img 
-                  src={originalImage} 
-                  className="absolute inset-0 w-full h-full object-contain pointer-events-none select-none"
-                  alt="Original Backdrop"
-                  referrerPolicy="no-referrer"
-                />
-                
-                {/* Interaction Canvas */}
-                <canvas 
-                  ref={canvasRef} 
-                  onMouseDown={startDrawing}
-                  onMouseMove={draw}
-                  onMouseUp={stopDrawing}
-                  onMouseLeave={stopDrawing}
-                  onTouchStart={startDrawing}
-                  onTouchMove={draw}
-                  onTouchEnd={stopDrawing}
-                  className="relative z-10 block w-full h-full object-contain touch-none cursor-crosshair"
-                />
+              <div ref={imageContainerRef} className="relative w-full h-full flex items-center justify-center overflow-hidden">
+                {/* Wrapper sized by JS to match object-contain behavior.
+                    Both img and canvas fill this wrapper exactly — NO letterboxing. */}
+                <div
+                  className="relative"
+                  style={{
+                    width: displaySize.width,
+                    height: displaySize.height,
+                  }}
+                >
+                  <img
+                    src={originalImage}
+                    className="absolute inset-0 w-full h-full pointer-events-none select-none"
+                    alt="Original"
+                    referrerPolicy="no-referrer"
+                  />
 
-                <div className="absolute top-4 left-4 bg-black/70 text-white px-3 py-1.5 border border-white/10 rounded flex items-center gap-2 text-[10px] pointer-events-none z-20 backdrop-blur-md">
+                  <canvas
+                    ref={canvasRef}
+                    className="absolute inset-0 w-full h-full touch-none cursor-crosshair z-10"
+                    onMouseDown={startDrawing}
+                    onMouseMove={draw}
+                    onMouseUp={stopDrawing}
+                    onMouseLeave={stopDrawing}
+                    onTouchStart={startDrawing}
+                    onTouchMove={draw}
+                    onTouchEnd={stopDrawing}
+                  />
+
+                  {/* Mask preview overlay */}
+                  {showMaskPreview && maskPreviewUrl && (
+                    <img
+                      src={maskPreviewUrl}
+                      className="absolute inset-0 w-full h-full pointer-events-none z-20 opacity-50"
+                      alt="Mask Preview"
+                    />
+                  )}
+                </div>
+
+                <div className="absolute top-4 left-4 bg-black/70 text-white px-3 py-1.5 border border-white/10 rounded flex items-center gap-2 text-[10px] pointer-events-none z-30 backdrop-blur-md">
                    <div className="w-2 h-2 rounded-full bg-csce-orange animate-pulse" />
-                   AI 辅助标注器 | 正在绘制修改围迹
+                   AI 辅助标注器
+                   <button
+                     onClick={() => setShowMaskPreview(p => !p)}
+                     className="ml-2 px-2 py-0.5 rounded border border-white/20 hover:bg-white/10 transition pointer-events-auto"
+                   >
+                     {showMaskPreview ? '隐藏遮罩' : '预览遮罩'}
+                   </button>
                 </div>
               </div>
             )}
@@ -386,7 +587,7 @@ export default function App() {
                    </div>
                    {result.analysis}
                 </div>
-                <button className="w-full py-2 border border-csce-blue text-csce-blue rounded text-xs font-bold hover:bg-csce-blue hover:text-white transition flex items-center justify-center gap-2 mt-4 shadow-sm">
+                <button onClick={handleDownload} className="w-full py-2 border border-csce-blue text-csce-blue rounded text-xs font-bold hover:bg-csce-blue hover:text-white transition flex items-center justify-center gap-2 mt-4 shadow-sm">
                    <Download className="w-4 h-4" /> 导出高清模拟图
                 </button>
               </div>
