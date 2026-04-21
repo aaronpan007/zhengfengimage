@@ -1,0 +1,46 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "PingFang SC", "Microsoft YaHei", "Inter", "Noto Sans SC", ui-sans-serif, system-ui, sans-serif;
+  --color-csce-blue: #1f3a5f;
+  --color-csce-orange: #ff6b35;
+  --color-border-base: #dcdfe6;
+  --color-bg-base: #f5f7fa;
+}
+
+body {
+  background-color: var(--color-bg-base);
+  color: #333;
+}
+
+.editor-canvas-stage {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #333;
+}
+
+.section-head {
+  font-size: 14px;
+  font-weight: bold;
+  color: var(--color-csce-blue);
+  border-left: 4px solid var(--color-csce-orange);
+  padding-left: 8px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 2px;
+}
+
