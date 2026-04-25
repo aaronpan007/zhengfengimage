@@ -52,34 +52,6 @@ function extractGptImage2Result(value: any): string | null {
   return typeof str === 'string' && str.startsWith('http') ? str : null;
 }
 
-async function extractGptImage2DataUrl(value: any): Promise<string | null> {
-  if (!value) return null;
-
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const found = await extractGptImage2DataUrl(item);
-      if (found) return found;
-    }
-    return null;
-  }
-
-  if (typeof value?.blob === 'function') {
-    const blob = await value.blob();
-    const buffer = Buffer.from(await blob.arrayBuffer());
-    const contentType = blob.type || 'image/png';
-    return `data:${contentType};base64,${buffer.toString('base64')}`;
-  }
-
-  if (typeof value === 'object') {
-    for (const candidate of [value.data, value.output, value.outputs, value.images, value.image, value.result]) {
-      const found = await extractGptImage2DataUrl(candidate);
-      if (found) return found;
-    }
-  }
-
-  return null;
-}
-
 export const config = {
   api: {
     bodyParser: {
@@ -228,10 +200,6 @@ User instruction: ${prompt}`;
     let resultBase64 = originalImage;
 
     if (selectedModel === 'gpt-image-2') {
-      const gptImage2DataUrl = await extractGptImage2DataUrl(output);
-      if (gptImage2DataUrl) {
-        resultBase64 = gptImage2DataUrl;
-      }
       resultImageUrl = extractGptImage2Result(output);
     }
 
@@ -270,7 +238,10 @@ User instruction: ${prompt}`;
 
     console.log('[AI] Extracted URL:', resultImageUrl ? resultImageUrl.slice(0, 80) + '...' : 'null');
 
-    if (selectedModel !== 'gpt-image-2' && resultImageUrl && resultImageUrl.startsWith('http')) {
+    if (selectedModel === 'gpt-image-2' && resultImageUrl) {
+      // Return the delivery URL directly to avoid Vercel's 4.5MB response body limit.
+      resultBase64 = resultImageUrl;
+    } else if (resultImageUrl && resultImageUrl.startsWith('http')) {
       try {
         console.log('[AI] Fetching result image to convert to base64...');
         const imgResponse = await fetch(resultImageUrl);
@@ -287,7 +258,7 @@ User instruction: ${prompt}`;
         console.warn('[AI] Failed to convert image to base64:', e.message);
         resultBase64 = resultImageUrl;
       }
-    } else if (selectedModel !== 'gpt-image-2' && resultImageUrl) {
+    } else if (resultImageUrl) {
       resultBase64 = resultImageUrl;
     }
 
