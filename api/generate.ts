@@ -5,11 +5,6 @@ const replicate = new Replicate({
   auth: process.env.REPLICATE_API_TOKEN,
 });
 
-const replicateRawOutput = new Replicate({
-  auth: process.env.REPLICATE_API_TOKEN,
-  useFileOutput: false,
-});
-
 const MODEL_MAP: Record<string, string> = {
   'nano-banana-pro': 'google/nano-banana-pro',
   'nano-banana-2': 'google/nano-banana-2',
@@ -55,6 +50,34 @@ function extractGptImage2Result(value: any): string | null {
 
   const str = value?.toString?.();
   return typeof str === 'string' && str.startsWith('http') ? str : null;
+}
+
+async function extractGptImage2DataUrl(value: any): Promise<string | null> {
+  if (!value) return null;
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = await extractGptImage2DataUrl(item);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  if (typeof value?.blob === 'function') {
+    const blob = await value.blob();
+    const buffer = Buffer.from(await blob.arrayBuffer());
+    const contentType = blob.type || 'image/png';
+    return `data:${contentType};base64,${buffer.toString('base64')}`;
+  }
+
+  if (typeof value === 'object') {
+    for (const candidate of [value.data, value.output, value.outputs, value.images, value.image, value.result]) {
+      const found = await extractGptImage2DataUrl(candidate);
+      if (found) return found;
+    }
+  }
+
+  return null;
 }
 
 export const config = {
@@ -149,7 +172,7 @@ RULES:
 User instruction: ${prompt}`;
 
       console.log(`[AI] Sending to ${replicateModel}, images: ${inputImages.length}, prompt length: ${aiPrompt.length}`);
-      output = await replicateRawOutput.run(replicateModel as `${string}/${string}`, {
+      output = await replicate.run(replicateModel as `${string}/${string}`, {
         input: {
           prompt: aiPrompt,
           input_images: inputImages,
@@ -202,8 +225,13 @@ User instruction: ${prompt}`;
     console.log('[AI] Prediction completed, output type:', typeof output, Array.isArray(output));
 
     let resultImageUrl: string | null = null;
+    let resultBase64 = originalImage;
 
     if (selectedModel === 'gpt-image-2') {
+      const gptImage2DataUrl = await extractGptImage2DataUrl(output);
+      if (gptImage2DataUrl) {
+        resultBase64 = gptImage2DataUrl;
+      }
       resultImageUrl = extractGptImage2Result(output);
     }
 
@@ -242,8 +270,7 @@ User instruction: ${prompt}`;
 
     console.log('[AI] Extracted URL:', resultImageUrl ? resultImageUrl.slice(0, 80) + '...' : 'null');
 
-    let resultBase64 = originalImage;
-    if (resultImageUrl && resultImageUrl.startsWith('http')) {
+    if (selectedModel !== 'gpt-image-2' && resultImageUrl && resultImageUrl.startsWith('http')) {
       try {
         console.log('[AI] Fetching result image to convert to base64...');
         const imgResponse = await fetch(resultImageUrl);
@@ -260,7 +287,7 @@ User instruction: ${prompt}`;
         console.warn('[AI] Failed to convert image to base64:', e.message);
         resultBase64 = resultImageUrl;
       }
-    } else if (resultImageUrl) {
+    } else if (selectedModel !== 'gpt-image-2' && resultImageUrl) {
       resultBase64 = resultImageUrl;
     }
 
