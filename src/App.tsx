@@ -312,31 +312,15 @@ export default function App() {
   const handleDownload = async () => {
     if (!result?.resultImage) return;
     try {
-      let downloadUrl = result.resultImage;
-
-      if (result.resultImage.startsWith('http')) {
-        const response = await fetch(result.resultImage);
-        if (!response.ok) {
-          throw new Error(`Download fetch failed: ${response.status}`);
-        }
-
-        const blob = await response.blob();
-        downloadUrl = URL.createObjectURL(blob);
-      }
-
       const link = document.createElement('a');
-      link.href = downloadUrl;
+      link.href = result.resultImage;
       link.download = `ai_edited_${Date.now()}.png`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-
-      if (downloadUrl !== result.resultImage) {
-        URL.revokeObjectURL(downloadUrl);
-      }
     } catch (err: any) {
       console.error('Download failed:', err);
-      window.open(result.resultImage, '_blank', 'noopener,noreferrer');
+      window.open(result.resultImage, '_blank');
     }
   };
 
