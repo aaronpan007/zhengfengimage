@@ -5,6 +5,11 @@ const replicate = new Replicate({
   auth: process.env.REPLICATE_API_TOKEN,
 });
 
+const replicateRawOutput = new Replicate({
+  auth: process.env.REPLICATE_API_TOKEN,
+  useFileOutput: false,
+});
+
 const MODEL_MAP: Record<string, string> = {
   'nano-banana-pro': 'google/nano-banana-pro',
   'nano-banana-2': 'google/nano-banana-2',
@@ -104,7 +109,7 @@ RULES:
 User instruction: ${prompt}`;
 
       console.log(`[AI] Sending to ${replicateModel}, images: ${inputImages.length}, prompt length: ${aiPrompt.length}`);
-      output = await replicate.run(replicateModel as `${string}/${string}`, {
+      output = await replicateRawOutput.run(replicateModel as `${string}/${string}`, {
         input: {
           prompt: aiPrompt,
           input_images: inputImages,
