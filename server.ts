@@ -26,6 +26,46 @@ const MODEL_MAP: Record<string, string> = {
   'gpt-image-2': 'openai/gpt-image-2',
 };
 
+function extractGptImage2Result(value: any): string | null {
+  if (!value) return null;
+
+  if (typeof value === 'string') {
+    return value.startsWith('http') || value.startsWith('data:image/') ? value : null;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = extractGptImage2Result(item);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  if (typeof value === 'object') {
+    if (typeof value.b64_json === 'string' && value.b64_json.length > 0) {
+      return `data:image/png;base64,${value.b64_json}`;
+    }
+
+    if (typeof value.url === 'string') {
+      return value.url;
+    }
+
+    if (typeof value.url === 'function') {
+      const urlValue = value.url();
+      if (typeof urlValue === 'string') return urlValue;
+      if (urlValue?.toString) return urlValue.toString();
+    }
+
+    for (const candidate of [value.data, value.output, value.outputs, value.images, value.image, value.result]) {
+      const found = extractGptImage2Result(candidate);
+      if (found) return found;
+    }
+  }
+
+  const str = value?.toString?.();
+  return typeof str === 'string' && str.startsWith('http') ? str : null;
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3001;
@@ -166,9 +206,13 @@ User instruction: ${prompt}`;
 
       let resultImageUrl: string | null = null;
 
-      if (typeof output === 'string') {
+      if (selectedModel === 'gpt-image-2') {
+        resultImageUrl = extractGptImage2Result(output);
+      }
+
+      if (!resultImageUrl && typeof output === 'string') {
         resultImageUrl = output;
-      } else if (output != null) {
+      } else if (!resultImageUrl && output != null) {
         if (typeof output.url === 'function') {
           const urlObj = output.url();
           resultImageUrl = typeof urlObj === 'string' ? urlObj : urlObj?.toString?.() || null;
