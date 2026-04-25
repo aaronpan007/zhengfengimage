@@ -452,11 +452,13 @@ export default function App() {
               <option value="nano-banana-pro">Nano Banana Pro (Google)</option>
               <option value="nano-banana-2">Nano Banana 2 (Google)</option>
               <option value="seedream-5-lite">Seedream 5.0 Lite (字节跳动)</option>
+              <option value="gpt-image-2">GPT Image 2 (OpenAI)</option>
             </select>
             <p className="mt-1 text-[10px] text-gray-400 leading-snug">
               {selectedModel === 'nano-banana-pro' && '稳定高效，适合大多数施工图编辑场景'}
               {selectedModel === 'nano-banana-2' && '最新版本，支持更多参考图和更高分辨率'}
               {selectedModel === 'seedream-5-lite' && '内置推理能力，擅长基于参考图的样式匹配'}
+              {selectedModel === 'gpt-image-2' && 'OpenAI 图像编辑模型，支持多图输入，适合参考图驱动的精细修改'}
             </p>
           </div>
 

@@ -18,6 +18,7 @@ const MODEL_MAP: Record<string, string> = {
   'nano-banana-pro': 'google/nano-banana-pro',
   'nano-banana-2': 'google/nano-banana-2',
   'seedream-5-lite': 'bytedance/seedream-5-lite',
+  'gpt-image-2': 'openai/gpt-image-2',
 };
 
 async function startServer() {
@@ -74,6 +75,48 @@ User instruction: ${prompt}`;
             image_input: seedreamImages,
             match_input_image: true,
             output_format: 'png',
+          },
+        });
+      } else if (selectedModel === 'gpt-image-2') {
+        modelName = 'GPT Image 2';
+
+        const inputImages: string[] = [annotatedImage || originalImage];
+        if (referenceImage) inputImages.push(referenceImage);
+
+        const aiPrompt = referenceImage
+          ? `Image editing task.
+
+Image 1: Construction site photo with RED-HIGHLIGHTED areas. The red highlighted parts are the exact regions that need to be modified.
+Image 2: Reference image showing the target appearance for the highlighted areas.
+
+RULES:
+- Edit only the red-highlighted areas in Image 1.
+- Keep all non-highlighted areas unchanged.
+- Match the highlighted areas to the materials, textures, colors, and structural style shown in Image 2.
+- Remove all red highlight traces from the final result.
+- Preserve the original photo's perspective, lighting, and camera angle.
+
+User instruction: ${prompt}`
+          : `Image editing task.
+
+Image 1: Construction site photo with RED-HIGHLIGHTED areas. The red highlighted parts are the exact regions that need to be modified.
+
+RULES:
+- Edit only the red-highlighted areas in Image 1.
+- Keep all non-highlighted areas unchanged.
+- Remove all red highlight traces from the final result.
+- Preserve the original photo's perspective, lighting, and camera angle.
+
+User instruction: ${prompt}`;
+
+        console.log(`[AI] Sending to ${replicateModel}, images: ${inputImages.length}, prompt length: ${aiPrompt.length}`);
+        output = await replicate.run(replicateModel as `${string}/${string}`, {
+          input: {
+            prompt: aiPrompt,
+            input_images: inputImages,
+            quality: 'auto',
+            output_format: 'png',
+            background: 'opaque',
           },
         });
       } else {
