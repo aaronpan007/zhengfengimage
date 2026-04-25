@@ -60,6 +60,49 @@ export const config = {
   },
 };
 
+function buildGptImage2Input(
+  annotatedImage: string | null | undefined,
+  originalImage: string | null | undefined,
+  referenceImage: string | null | undefined,
+  prompt: string
+) {
+  const inputImages: string[] = [annotatedImage || originalImage || ''];
+  if (referenceImage) inputImages.push(referenceImage);
+
+  const aiPrompt = referenceImage
+    ? `Image editing task.
+
+Image 1: Construction site photo with RED-HIGHLIGHTED areas. The red highlighted parts are the exact regions that need to be modified.
+Image 2: Reference image showing the TARGET appearance. Match the highlighted areas to the materials, textures, colors, and structural style in the reference image.
+
+RULES:
+- ONLY modify the RED-HIGHLIGHTED areas in Image 1.
+- Keep all non-highlighted areas 100% unchanged.
+- The result must look natural and seamless, with no red color remaining.
+- Maintain the original photo's lighting, perspective, and camera angle.
+
+User instruction: ${prompt}`
+    : `Image editing task.
+
+Image 1: Construction site photo with RED-HIGHLIGHTED areas. The red highlighted parts are the exact regions that need to be modified.
+
+RULES:
+- ONLY modify the RED-HIGHLIGHTED areas in Image 1.
+- Keep all non-highlighted areas 100% unchanged.
+- The result must look natural and seamless, with no red color remaining.
+- Maintain the original photo's lighting, perspective, and camera angle.
+
+User instruction: ${prompt}`;
+
+  return {
+    prompt: aiPrompt,
+    input_images: inputImages,
+    quality: 'auto',
+    output_format: 'png',
+    background: 'opaque',
+  };
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -114,44 +157,19 @@ User instruction: ${prompt}`;
       });
     } else if (selectedModel === 'gpt-image-2') {
       modelName = 'GPT Image 2';
+      const gptInput = buildGptImage2Input(annotatedImage, originalImage, referenceImage, prompt);
 
-      const inputImages: string[] = [annotatedImage || originalImage];
-      if (referenceImage) inputImages.push(referenceImage);
+      console.log(`[AI] Creating async prediction for ${replicateModel}, images: ${gptInput.input_images.length}, prompt length: ${gptInput.prompt.length}`);
+      const prediction = await replicate.predictions.create({
+        model: replicateModel,
+        input: gptInput,
+      });
 
-      const aiPrompt = referenceImage
-        ? `Image editing task.
-
-Image 1: Construction site photo with RED-HIGHLIGHTED areas. The red highlighted parts are the exact regions that need to be modified.
-Image 2: Reference image showing the TARGET appearance. Match the highlighted areas to the materials, textures, colors, and structural style in the reference image.
-
-RULES:
-- ONLY modify the RED-HIGHLIGHTED areas in Image 1.
-- Keep all non-highlighted areas 100% unchanged.
-- The result must look natural and seamless, with no red color remaining.
-- Maintain the original photo's lighting, perspective, and camera angle.
-
-User instruction: ${prompt}`
-        : `Image editing task.
-
-Image 1: Construction site photo with RED-HIGHLIGHTED areas. The red highlighted parts are the exact regions that need to be modified.
-
-RULES:
-- ONLY modify the RED-HIGHLIGHTED areas in Image 1.
-- Keep all non-highlighted areas 100% unchanged.
-- The result must look natural and seamless, with no red color remaining.
-- Maintain the original photo's lighting, perspective, and camera angle.
-
-User instruction: ${prompt}`;
-
-      console.log(`[AI] Sending to ${replicateModel}, images: ${inputImages.length}, prompt length: ${aiPrompt.length}`);
-      output = await replicate.run(replicateModel as `${string}/${string}`, {
-        input: {
-          prompt: aiPrompt,
-          input_images: inputImages,
-          quality: 'auto',
-          output_format: 'png',
-          background: 'opaque',
-        },
+      return res.json({
+        success: true,
+        pending: true,
+        predictionId: prediction.id,
+        analysis: `[${modelName} 排队中]\n\n已提交图像生成任务，正在等待模型完成。`,
       });
     } else {
       modelName = selectedModel === 'nano-banana-2' ? 'Nano Banana 2' : 'Nano Banana Pro';

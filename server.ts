@@ -61,11 +61,103 @@ function extractGptImage2Result(value: any): string | null {
   return typeof str === 'string' && str.startsWith('http') ? str : null;
 }
 
+function buildGptImage2Input(
+  annotatedImage: string | null | undefined,
+  originalImage: string | null | undefined,
+  referenceImage: string | null | undefined,
+  prompt: string
+) {
+  const inputImages: string[] = [annotatedImage || originalImage || ''];
+  if (referenceImage) inputImages.push(referenceImage);
+
+  const aiPrompt = referenceImage
+    ? `Image editing task.
+
+Image 1: Construction site photo with RED-HIGHLIGHTED areas. The red highlighted parts are the exact regions that need to be modified.
+Image 2: Reference image showing the TARGET appearance. Match the highlighted areas to the materials, textures, colors, and structural style in the reference image.
+
+RULES:
+- ONLY modify the RED-HIGHLIGHTED areas in Image 1.
+- Keep all non-highlighted areas 100% unchanged.
+- The result must look natural and seamless, with no red color remaining.
+- Maintain the original photo's lighting, perspective, and camera angle.
+
+User instruction: ${prompt}`
+    : `Image editing task.
+
+Image 1: Construction site photo with RED-HIGHLIGHTED areas. The red highlighted parts are the exact regions that need to be modified.
+
+RULES:
+- ONLY modify the RED-HIGHLIGHTED areas in Image 1.
+- Keep all non-highlighted areas 100% unchanged.
+- The result must look natural and seamless, with no red color remaining.
+- Maintain the original photo's lighting, perspective, and camera angle.
+
+User instruction: ${prompt}`;
+
+  return {
+    prompt: aiPrompt,
+    input_images: inputImages,
+    quality: 'auto',
+    output_format: 'png',
+    background: 'opaque',
+  };
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3001;
 
   app.use(express.json({ limit: '50mb' }));
+
+  app.get('/api/generate-status', async (req, res) => {
+    const predictionId = String(req.query.id || '');
+    if (!predictionId) {
+      return res.status(400).json({ error: 'Missing prediction id' });
+    }
+
+    try {
+      const prediction = await replicate.predictions.get(predictionId);
+
+      if (prediction.status === 'starting' || prediction.status === 'processing') {
+        return res.json({
+          success: true,
+          pending: true,
+          status: prediction.status,
+        });
+      }
+
+      if (prediction.status === 'failed' || prediction.status === 'canceled') {
+        return res.status(500).json({
+          success: false,
+          pending: false,
+          error: prediction.error || `Prediction ${prediction.status}`,
+        });
+      }
+
+      const resultImage = extractGptImage2Result(prediction.output);
+      if (!resultImage) {
+        return res.status(500).json({
+          success: false,
+          pending: false,
+          error: 'Prediction completed but no image output was found',
+        });
+      }
+
+      return res.json({
+        success: true,
+        pending: false,
+        analysis: '[GPT Image 2 生成完成]\n\n图片已生成。',
+        resultImage,
+      });
+    } catch (error: any) {
+      return res.status(500).json({
+        success: false,
+        pending: false,
+        error: error.message || 'Failed to fetch prediction status',
+      });
+    }
+  });
 
   app.post('/api/generate', async (req, res) => {
     console.log('[API] Received generate request');
@@ -117,44 +209,19 @@ User instruction: ${prompt}`;
         });
       } else if (selectedModel === 'gpt-image-2') {
         modelName = 'GPT Image 2';
+        const gptInput = buildGptImage2Input(annotatedImage, originalImage, referenceImage, prompt);
 
-        const inputImages: string[] = [annotatedImage || originalImage];
-        if (referenceImage) inputImages.push(referenceImage);
+        console.log(`[AI] Creating async prediction for ${replicateModel}, images: ${gptInput.input_images.length}, prompt length: ${gptInput.prompt.length}`);
+        const prediction = await replicate.predictions.create({
+          model: replicateModel,
+          input: gptInput,
+        });
 
-        const aiPrompt = referenceImage
-          ? `Image editing task.
-
-Image 1: Construction site photo with RED-HIGHLIGHTED areas. The red highlighted parts are the exact regions that need to be modified.
-Image 2: Reference image showing the TARGET appearance. Match the highlighted areas to the materials, textures, colors, and structural style in the reference image.
-
-RULES:
-- ONLY modify the RED-HIGHLIGHTED areas in Image 1.
-- Keep all non-highlighted areas 100% unchanged.
-- The result must look natural and seamless, with no red color remaining.
-- Maintain the original photo's lighting, perspective, and camera angle.
-
-User instruction: ${prompt}`
-          : `Image editing task.
-
-Image 1: Construction site photo with RED-HIGHLIGHTED areas. The red highlighted parts are the exact regions that need to be modified.
-
-RULES:
-- ONLY modify the RED-HIGHLIGHTED areas in Image 1.
-- Keep all non-highlighted areas 100% unchanged.
-- The result must look natural and seamless, with no red color remaining.
-- Maintain the original photo's lighting, perspective, and camera angle.
-
-User instruction: ${prompt}`;
-
-        console.log(`[AI] Sending to ${replicateModel}, images: ${inputImages.length}, prompt length: ${aiPrompt.length}`);
-        output = await replicate.run(replicateModel as `${string}/${string}`, {
-          input: {
-            prompt: aiPrompt,
-            input_images: inputImages,
-            quality: 'auto',
-            output_format: 'png',
-            background: 'opaque',
-          },
+        return res.json({
+          success: true,
+          pending: true,
+          predictionId: prediction.id,
+          analysis: `[${modelName} 排队中]\n\n已提交图像生成任务，正在等待模型完成。`,
         });
       } else {
         modelName = selectedModel === 'nano-banana-2' ? 'Nano Banana 2' : 'Nano Banana Pro';

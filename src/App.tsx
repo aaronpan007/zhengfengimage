@@ -33,6 +33,15 @@ interface ProcessingResult {
   resultImage: string;
 }
 
+interface GenerateResponse {
+  success: boolean;
+  analysis?: string;
+  resultImage?: string;
+  pending?: boolean;
+  predictionId?: string;
+  error?: string;
+}
+
 // --- Components ---
 
 const ComparisonSlider = ({ before, after }: { before: string; after: string }) => {
@@ -94,6 +103,27 @@ export default function App() {
   const [showMaskPreview, setShowMaskPreview] = useState(false);
   const [maskPreviewUrl, setMaskPreviewUrl] = useState<string | null>(null);
   const [displaySize, setDisplaySize] = useState({ width: 0, height: 0 });
+
+  const pollGptImage2Result = async (predictionId: string): Promise<GenerateResponse> => {
+    const maxAttempts = 120;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+
+      const res = await fetch(`/api/generate-status?id=${encodeURIComponent(predictionId)}`);
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || `查询任务状态失败（HTTP ${res.status}）`);
+      }
+
+      if (!data.pending) {
+        return data;
+      }
+    }
+
+    throw new Error('生成超时，请稍后重试');
+  };
 
   // Compute the image display size to match object-contain behavior,
   // so the canvas overlay is pixel-aligned with the image.
@@ -364,18 +394,22 @@ export default function App() {
         throw new Error(`API 返回了非 JSON 响应（HTTP ${res.status}）: ${rawText.slice(0, 120)}`);
       }
 
-      const data = await res.json();
+      const data: GenerateResponse = await res.json();
       console.log('[Frontend] API Response:', data);
 
       if (!res.ok) {
         throw new Error(data.error || `请求失败（HTTP ${res.status}）`);
       }
 
-      if (data.success) {
+      const finalData = data.pending && data.predictionId
+        ? await pollGptImage2Result(data.predictionId)
+        : data;
+
+      if (finalData.success) {
         const newResult: ProcessingResult = {
           success: true,
-          analysis: data.analysis,
-          resultImage: data.resultImage || originalImage
+          analysis: finalData.analysis || '',
+          resultImage: finalData.resultImage || originalImage
         };
 
         setResult(newResult);
