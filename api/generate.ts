@@ -12,54 +12,6 @@ const MODEL_MAP: Record<string, string> = {
   'gpt-image-2': 'openai/gpt-image-2',
 };
 
-function toImageSource(value: any): string | null {
-  if (!value) return null;
-
-  if (typeof value === 'string') {
-    return value.startsWith('http') || value.startsWith('data:image/') ? value : null;
-  }
-
-  if (value instanceof URL) {
-    return value.toString();
-  }
-
-  if (typeof value.url === 'function') {
-    const urlValue = value.url();
-    if (urlValue instanceof URL) return urlValue.toString();
-    if (typeof urlValue === 'string') return urlValue;
-  }
-
-  if (typeof value.url === 'string') {
-    return value.url;
-  }
-
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const nested = toImageSource(item);
-      if (nested) return nested;
-    }
-    return null;
-  }
-
-  if (typeof value === 'object') {
-    if (typeof value.b64_json === 'string' && value.b64_json.length > 0) {
-      return `data:image/png;base64,${value.b64_json}`;
-    }
-
-    for (const candidate of [value.image, value.images, value.output, value.outputs, value.data, value.result]) {
-      const nested = toImageSource(candidate);
-      if (nested) return nested;
-    }
-  }
-
-  if (typeof value.toString === 'function') {
-    const str = value.toString();
-    if (typeof str === 'string' && str.startsWith('http')) return str;
-  }
-
-  return null;
-}
-
 export const config = {
   api: {
     bodyParser: {
@@ -74,7 +26,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   console.log('[API] Received generate request');
-
   try {
     const { originalImage, annotatedImage, referenceImage, prompt, model } = req.body;
     const selectedModel = model || 'nano-banana-pro';
@@ -131,14 +82,13 @@ User instruction: ${prompt}`;
         ? `Image editing task.
 
 Image 1: Construction site photo with RED-HIGHLIGHTED areas. The red highlighted parts are the exact regions that need to be modified.
-Image 2: Reference image showing the target appearance for the highlighted areas.
+Image 2: Reference image showing the TARGET appearance. Match the highlighted areas to the materials, textures, colors, and structural style in the reference image.
 
 RULES:
-- Edit only the red-highlighted areas in Image 1.
-- Keep all non-highlighted areas unchanged.
-- Match the highlighted areas to the materials, textures, colors, and structural style shown in Image 2.
-- Remove all red highlight traces from the final result.
-- Preserve the original photo's perspective, lighting, and camera angle.
+- ONLY modify the RED-HIGHLIGHTED areas in Image 1.
+- Keep all non-highlighted areas 100% unchanged.
+- The result must look natural and seamless, with no red color remaining.
+- Maintain the original photo's lighting, perspective, and camera angle.
 
 User instruction: ${prompt}`
         : `Image editing task.
@@ -146,10 +96,10 @@ User instruction: ${prompt}`
 Image 1: Construction site photo with RED-HIGHLIGHTED areas. The red highlighted parts are the exact regions that need to be modified.
 
 RULES:
-- Edit only the red-highlighted areas in Image 1.
-- Keep all non-highlighted areas unchanged.
-- Remove all red highlight traces from the final result.
-- Preserve the original photo's perspective, lighting, and camera angle.
+- ONLY modify the RED-HIGHLIGHTED areas in Image 1.
+- Keep all non-highlighted areas 100% unchanged.
+- The result must look natural and seamless, with no red color remaining.
+- Maintain the original photo's lighting, perspective, and camera angle.
 
 User instruction: ${prompt}`;
 
@@ -206,16 +156,45 @@ User instruction: ${prompt}`;
 
     console.log('[AI] Prediction completed, output type:', typeof output, Array.isArray(output));
 
-    const resultImageUrl = toImageSource(output);
-    console.log('[AI] Extracted image source:', resultImageUrl ? resultImageUrl.slice(0, 120) + '...' : 'null');
+    let resultImageUrl: string | null = null;
 
-    if (!resultImageUrl) {
-      console.error('[AI] Unsupported output payload:', output);
-      throw new Error('Replicate returned success, but no image could be extracted from the output payload');
+    if (typeof output === 'string') {
+      resultImageUrl = output;
+    } else if (output != null) {
+      if (typeof output.url === 'function') {
+        const urlObj = output.url();
+        resultImageUrl = typeof urlObj === 'string' ? urlObj : urlObj?.toString?.() || null;
+      }
+
+      if (!resultImageUrl) {
+        const str = output.toString?.();
+        if (typeof str === 'string' && str.startsWith('http')) {
+          resultImageUrl = str;
+        } else if (Array.isArray(output) && output.length > 0) {
+          const first = output[0];
+          if (typeof first === 'string') {
+            resultImageUrl = first;
+          } else if (first != null) {
+            if (typeof first.url === 'function') {
+              const firstUrlObj = first.url();
+              resultImageUrl = typeof firstUrlObj === 'string' ? firstUrlObj : firstUrlObj?.toString?.() || null;
+            }
+
+            if (!resultImageUrl) {
+              const firstStr = first.toString?.();
+              if (typeof firstStr === 'string' && firstStr.startsWith('http')) {
+                resultImageUrl = firstStr;
+              }
+            }
+          }
+        }
+      }
     }
 
+    console.log('[AI] Extracted URL:', resultImageUrl ? resultImageUrl.slice(0, 80) + '...' : 'null');
+
     let resultBase64 = originalImage;
-    if (resultImageUrl.startsWith('http')) {
+    if (resultImageUrl && resultImageUrl.startsWith('http')) {
       try {
         console.log('[AI] Fetching result image to convert to base64...');
         const imgResponse = await fetch(resultImageUrl);
@@ -232,7 +211,7 @@ User instruction: ${prompt}`;
         console.warn('[AI] Failed to convert image to base64:', e.message);
         resultBase64 = resultImageUrl;
       }
-    } else {
+    } else if (resultImageUrl) {
       resultBase64 = resultImageUrl;
     }
 

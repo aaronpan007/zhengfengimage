@@ -302,7 +302,7 @@ export default function App() {
         }
         ctx.putImageData(imgData, 0, 0);
 
-        resolve(annotatedCanvas.toDataURL('image/jpeg', 0.92));
+        resolve(annotatedCanvas.toDataURL('image/jpeg', 0.85));
       };
       img.onerror = () => resolve(null);
       img.src = originalImage;
@@ -318,7 +318,7 @@ export default function App() {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Download failed:', err);
       window.open(result.resultImage, '_blank');
     }
@@ -351,7 +351,6 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          originalImage,
           annotatedImage,
           referenceImage: refImage,
           prompt,
@@ -359,8 +358,18 @@ export default function App() {
         }),
       });
 
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const rawText = await res.text();
+        throw new Error(`API 返回了非 JSON 响应（HTTP ${res.status}）: ${rawText.slice(0, 120)}`);
+      }
+
       const data = await res.json();
       console.log('[Frontend] API Response:', data);
+
+      if (!res.ok) {
+        throw new Error(data.error || `请求失败（HTTP ${res.status}）`);
+      }
 
       if (data.success) {
         const newResult: ProcessingResult = {
