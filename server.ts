@@ -21,15 +21,63 @@ const MODEL_MAP: Record<string, string> = {
   'gpt-image-2': 'openai/gpt-image-2',
 };
 
+function toImageSource(value: any): string | null {
+  if (!value) return null;
+
+  if (typeof value === 'string') {
+    return value.startsWith('http') || value.startsWith('data:image/') ? value : null;
+  }
+
+  if (value instanceof URL) {
+    return value.toString();
+  }
+
+  if (typeof value.url === 'function') {
+    const urlValue = value.url();
+    if (urlValue instanceof URL) return urlValue.toString();
+    if (typeof urlValue === 'string') return urlValue;
+  }
+
+  if (typeof value.url === 'string') {
+    return value.url;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const nested = toImageSource(item);
+      if (nested) return nested;
+    }
+    return null;
+  }
+
+  if (typeof value === 'object') {
+    if (typeof value.b64_json === 'string' && value.b64_json.length > 0) {
+      return `data:image/png;base64,${value.b64_json}`;
+    }
+
+    for (const candidate of [value.image, value.images, value.output, value.outputs, value.data, value.result]) {
+      const nested = toImageSource(candidate);
+      if (nested) return nested;
+    }
+  }
+
+  if (typeof value.toString === 'function') {
+    const str = value.toString();
+    if (typeof str === 'string' && str.startsWith('http')) return str;
+  }
+
+  return null;
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3001;
 
   app.use(express.json({ limit: '50mb' }));
 
-  // AI Processing Endpoint
   app.post('/api/generate', async (req, res) => {
     console.log('[API] Received generate request');
+
     try {
       const { originalImage, annotatedImage, referenceImage, prompt, model } = req.body;
       const selectedModel = model || 'nano-banana-pro';
@@ -50,7 +98,6 @@ async function startServer() {
       let modelName: string;
 
       if (selectedModel === 'seedream-5-lite') {
-        // Seedream: single image_input, example-based editing
         modelName = 'Seedream 5.0 Lite';
 
         const aiPrompt = referenceImage
@@ -120,7 +167,6 @@ User instruction: ${prompt}`;
           },
         });
       } else {
-        // Nano Banana Pro / 2: image_input array, multi-image reference
         modelName = selectedModel === 'nano-banana-2' ? 'Nano Banana 2' : 'Nano Banana Pro';
 
         const imageInput: string[] = [annotatedImage || originalImage];
@@ -163,35 +209,16 @@ User instruction: ${prompt}`;
 
       console.log('[AI] Prediction completed, output type:', typeof output, Array.isArray(output));
 
-      // Replicate SDK returns FileOutput (extends ReadableStream) for image URLs.
-      // FileOutput has toString() returning the URL string, but .url is a METHOD not a property.
-      let resultImageUrl: string | null = null;
+      const resultImageUrl = toImageSource(output);
+      console.log('[AI] Extracted image source:', resultImageUrl ? resultImageUrl.slice(0, 120) + '...' : 'null');
 
-      if (typeof output === 'string') {
-        resultImageUrl = output;
-      } else if (output != null) {
-        // Try toString() first — FileOutput.toString() returns the URL string
-        const str = output.toString?.();
-        if (typeof str === 'string' && str.startsWith('http')) {
-          resultImageUrl = str;
-        } else if (Array.isArray(output) && output.length > 0) {
-          const first = output[0];
-          if (typeof first === 'string') {
-            resultImageUrl = first;
-          } else if (first != null) {
-            const firstStr = first.toString?.();
-            if (typeof firstStr === 'string' && firstStr.startsWith('http')) {
-              resultImageUrl = firstStr;
-            }
-          }
-        }
+      if (!resultImageUrl) {
+        console.error('[AI] Unsupported output payload:', output);
+        throw new Error('Replicate returned success, but no image could be extracted from the output payload');
       }
 
-      console.log('[AI] Extracted URL:', resultImageUrl ? resultImageUrl.slice(0, 80) + '...' : 'null');
-
-      // Convert Replicate URL to base64 to avoid CORS issues
       let resultBase64 = originalImage;
-      if (resultImageUrl && resultImageUrl.startsWith('http')) {
+      if (resultImageUrl.startsWith('http')) {
         try {
           console.log('[AI] Fetching result image to convert to base64...');
           const imgResponse = await fetch(resultImageUrl);
@@ -208,7 +235,7 @@ User instruction: ${prompt}`;
           console.warn('[AI] Failed to convert image to base64:', e.message);
           resultBase64 = resultImageUrl;
         }
-      } else if (resultImageUrl) {
+      } else {
         resultBase64 = resultImageUrl;
       }
 
